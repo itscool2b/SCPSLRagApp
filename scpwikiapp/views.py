@@ -6,19 +6,19 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import login, authenticate
 from django.contrib.auth.decorators import login_required
 
-from .models import ChatSession, ChatMessage
+from .models import ChatSession, ChatMessage, PDFDocument
 from .forms import SignUpForm, CustomLoginForm
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain.chat_models import ChatOpenAI
+from langchain.embeddings import OpenAIEmbeddings
 from langchain.prompts import PromptTemplate
-from langchain_community.vectorstores import FAISS
 from langchain.memory import ConversationBufferMemory
 from langchain.agents import Tool, initialize_agent
-from langchain_community.document_loaders import PDFLoader
+from langchain.document_loaders import PDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import pinecone
 from langchain.vectorstores import Pinecone
-
+import openai
 
 load_dotenv()
 
@@ -73,20 +73,46 @@ def handle_chat(request,session_id):
             return redirect('chat',session_id=session_id)
     return redirect('chat',session_id=session_id)
 
+
+class OpenAIChatLLM:
+    def __init__(self, api_key, model="gpt-4"):
+        self.api_key = api_key
+        self.model = model
+        openai.api_key = api_key
+
+    def call(self, prompt, **kwargs):
+        response = openai.ChatCompletion.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "You are an expert on the game SCP: Secret Laboratory."},
+                {"role": "user", "content": prompt}
+            ],
+            **kwargs
+        )
+        return response['choices'][0]['message']['content']
+
+
 def ragapp(question):
-    
-    if pincecone_index.describe_index_stats().total_vector_count == 0:
-        loader = PDFLoader(file_path="scpwikiapp/ragpdfs/jailbird.pdf")
-        docs = loader.load()
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    pinecone_api_key = os.getenv('PINECONE_API_KEY')
+    pinecone_environment = 'us-east-1'
+    index_name = "scpragapp"
 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        documents = text_splitter.split_documents(docs)
-
-        openai_api_key = os.getenv('OPENAI_API_KEY')
+    def get_relevant_documents(query):
+        # Initialize Pinecone and embeddings
+        pinecone.init(api_key=pinecone_api_key, environment=pinecone_environment)
+        pinecone_index = pinecone.Index(index_name)
         embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+        vectorstore = Pinecone(pinecone_index, embeddings)
 
-        pinecone.from_documents(documents,embeddings,index_name=index_name)
-    retriever = Pinecone(index_name=index_name, embeddings=OpenAIEmbeddings(openai_api_key=os.getenv('OPENAI_API_KEY'))).as_retriever()
+        # Embed the query
+        query_embedding = embeddings.embed_query(query)
+
+        # Perform the similarity search
+        results = vectorstore.similarity_search(query_embedding, k=5)  # Adjust k as needed
+
+        # Extract content from the results
+        return [result.metadata['content'] for result in results]
 
     info_prompt_template = PromptTemplate.from_template("""
     You are an expert on the game SCP: Secret Laboratory. Answer the following question based on the game:
@@ -95,21 +121,20 @@ def ragapp(question):
     Answer:
     """)
 
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    llm = ChatOpenAI(api_key=openai_api_key, temperature=0)
+    llm = OpenAIChatLLM(api_key=openai_api_key)
 
     memory = ConversationBufferMemory()
     tools = [
         Tool(
             name="InformationProvider",
-            func=lambda query: retriever.get_relevant_documents(query),
+            func=lambda query: get_relevant_documents(query),
             description="Use this tool to retrieve detailed information about SCP: Secret Laboratory."
         ),
     ]
 
     agent = initialize_agent(
         tools=tools,
-        llm=llm,
+        llm=llm.call,  # Use the call method of our LLM wrapper
         agent_type="zero-shot-react-description",
         memory=memory,
         handle_parsing_errors=True,
@@ -118,4 +143,3 @@ def ragapp(question):
 
     response = agent(question)
     return response
-
