@@ -16,18 +16,15 @@ from langchain.memory import ConversationBufferMemory
 from langchain.agents import Tool, initialize_agent
 from langchain_community.document_loaders import PDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+import pinecone
+from langchain.vectorstores import Pinecone
 
 
 load_dotenv()
 
-
-FAISS_INDEX_PATH = "scpwikiapp/faiss_index.index"
-
-def load_faiss_index():
-    if os.path.exists(FAISS_INDEX_PATH):
-        return FAISS.load_local(FAISS_INDEX_PATH)
-    return None
-
+pinecone.init(api_key=os.getenv('PINECONE_API_KEY'), environment='us-east-1')  # Use your Pinecone environment
+index_name = "scpragapp"
+pinecone_index = pinecone.Index(index_name)
 
 def signup(request):
     if request.method == 'POST':
@@ -56,12 +53,13 @@ def login(request):
         form = CustomLoginForm()
     return()
 
+#ez
 #this is for starting new chat. it is linked with the function below it by foreign key
 def start_chat_session(request):
     session_id = str(uuid.uuid4())
     ChatSession.objects.create(session_id=session_id,user=request.user.username)
     return redirect('chat', session_id=session_id)
-
+#ez
 #make this happen every time they click the button to get their question answered and saves it to the chat session above
 def handle_chat(request,session_id):
     chat_session = get_object_or_404(ChatSession,session_id=session_id)
@@ -76,9 +74,8 @@ def handle_chat(request,session_id):
     return redirect('chat',session_id=session_id)
 
 def ragapp(question):
-    # Load the FAISS index if it exists, otherwise create a new one
-    faiss_index = load_faiss_index()
-    if not faiss_index:
+    
+    if pincecone_index.describe_index_stats().total_vector_count == 0:
         loader = PDFLoader(file_path="scpwikiapp/ragpdfs/jailbird.pdf")
         docs = loader.load()
 
@@ -88,10 +85,8 @@ def ragapp(question):
         openai_api_key = os.getenv('OPENAI_API_KEY')
         embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
 
-        faiss_index = FAISS.from_documents(documents, embeddings)
-        faiss_index.save_local(FAISS_INDEX_PATH)
-
-    retriever = faiss_index.as_retriever()
+        pinecone.from_documents(documents,embeddings,index_name=index_name)
+    retriever = Pinecone(index_name=index_name, embeddings=OpenAIEmbeddings(openai_api_key=os.getenv('OPENAI_API_KEY'))).as_retriever()
 
     info_prompt_template = PromptTemplate.from_template("""
     You are an expert on the game SCP: Secret Laboratory. Answer the following question based on the game:
