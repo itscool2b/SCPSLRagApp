@@ -3,7 +3,7 @@ import uuid
 from dotenv import load_dotenv
 
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth import login, authenticate
+from django.contrib.auth import login as auth_login, authenticate
 from django.contrib.auth.decorators import login_required
 
 from .models import ChatSession, ChatMessage, PDFDocument
@@ -14,15 +14,15 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from langchain.agents import Tool, initialize_agent
-from langchain.document_loaders import PDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import pinecone
 from langchain.vectorstores import Pinecone
 import openai
+from pdfminer.high_level import extract_text
 
 load_dotenv()
 
-pinecone.init(api_key=os.getenv('PINECONE_API_KEY'), environment='us-east-1')  # Use your Pinecone environment
+pinecone.init(api_key=os.getenv('PINECONE_API_KEY'), environment='us-east-1')
 index_name = "scpragapp"
 pinecone_index = pinecone.Index(index_name)
 
@@ -33,46 +33,46 @@ def signup(request):
             user = form.save()
             username = form.cleaned_data.get('username')
             password = form.cleaned_data.get('password')
-            user = authenticate(username=username,password=password)
-            login(request,user)
+            user = authenticate(username=username, password=password)
+            if user is not None:
+                auth_login(request, user)
+                return redirect('home')  # Redirect to a home page or dashboard
     else:
         form = SignUpForm()
-    return render()
+    return render(request, 'signup.html', {'form': form})
 
-def login(request):
+def login_view(request):
     if request.method == 'POST':
-        form = CustomLoginForm(request, data=request.post)
+        form = CustomLoginForm(request, data=request.POST)
         if form.is_valid():
-            username = form.cleaned_data.get(username)
-            password = form.cleaned_data.get(password)
-            user = authenticate(username=username,password=password)
+            username = form.cleaned_data.get('username')
+            password = form.cleaned_data.get('password')
+            user = authenticate(username=username, password=password)
             if user is not None:
-                login(request,user)
-                return()
+                auth_login(request, user)
+                return redirect('home')  # Redirect to a home page or dashboard
     else:
         form = CustomLoginForm()
-    return()
+    return render(request, 'login.html', {'form': form})
 
-#ez
-#this is for starting new chat. it is linked with the function below it by foreign key
+@login_required
 def start_chat_session(request):
     session_id = str(uuid.uuid4())
-    ChatSession.objects.create(session_id=session_id,user=request.user.username)
+    ChatSession.objects.create(session_id=session_id, user=request.user)
     return redirect('chat', session_id=session_id)
-#ez
-#make this happen every time they click the button to get their question answered and saves it to the chat session above
-def handle_chat(request,session_id):
-    chat_session = get_object_or_404(ChatSession,session_id=session_id)
+
+@login_required
+def handle_chat(request, session_id):
+    chat_session = get_object_or_404(ChatSession, session_id=session_id)
 
     if request.method == 'POST':
-        user_message = request.POST.get('message','')
+        user_message = request.POST.get('message', '')
         if user_message:
-            usermessage = ChatMessage.objects.create(session=chat_session,sender='user',message=user_message)
+            ChatMessage.objects.create(session=chat_session, sender='user', message=user_message)
             response = ragapp(user_message)
-            botmessage = ChatMessage.objects.create(session=chat_session,sender='bot', message=response)
-            return redirect('chat',session_id=session_id)
-    return redirect('chat',session_id=session_id)
-
+            ChatMessage.objects.create(session=chat_session, sender='bot', message=response)
+            return redirect('chat', session_id=session_id)
+    return render(request, 'chat.html', {'session_id': session_id, 'messages': chat_session.messages.all()})
 
 class OpenAIChatLLM:
     def __init__(self, api_key, model="gpt-4"):
@@ -91,7 +91,6 @@ class OpenAIChatLLM:
         )
         return response['choices'][0]['message']['content']
 
-
 def ragapp(question):
     openai_api_key = os.getenv('OPENAI_API_KEY')
     pinecone_api_key = os.getenv('PINECONE_API_KEY')
@@ -99,19 +98,13 @@ def ragapp(question):
     index_name = "scpragapp"
 
     def get_relevant_documents(query):
-        # Initialize Pinecone and embeddings
         pinecone.init(api_key=pinecone_api_key, environment=pinecone_environment)
         pinecone_index = pinecone.Index(index_name)
         embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
         vectorstore = Pinecone(pinecone_index, embeddings)
 
-        # Embed the query
         query_embedding = embeddings.embed_query(query)
-
-        # Perform the similarity search
-        results = vectorstore.similarity_search(query_embedding, k=5)  # Adjust k as needed
-
-        # Extract content from the results
+        results = vectorstore.similarity_search(query_embedding, k=5)
         return [result.metadata['content'] for result in results]
 
     info_prompt_template = PromptTemplate.from_template("""
@@ -122,7 +115,6 @@ def ragapp(question):
     """)
 
     llm = OpenAIChatLLM(api_key=openai_api_key)
-
     memory = ConversationBufferMemory()
     tools = [
         Tool(
@@ -134,7 +126,7 @@ def ragapp(question):
 
     agent = initialize_agent(
         tools=tools,
-        llm=llm.call,  # Use the call method of our LLM wrapper
+        llm=llm.call,
         agent_type="zero-shot-react-description",
         memory=memory,
         handle_parsing_errors=True,
