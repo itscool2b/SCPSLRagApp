@@ -75,7 +75,7 @@ def handle_chat(request, session_id):
     return render(request, 'chat.html', {'session_id': session_id, 'messages': chat_session.messages.all()})
 
 class OpenAIChatLLM:
-    def __init__(self, api_key, model="gpt-4"):
+    def __init__(self, api_key, model="gpt-4o-mini"):
         self.api_key = api_key
         self.model = model
         openai.api_key = api_key
